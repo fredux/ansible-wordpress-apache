@@ -1,0 +1,124 @@
+---
+- hosts: localhost
+  become: true
+  vars_files:
+    - vars/default.yml
+
+  tasks:
+    - name: Installa prerequisitos
+      apt: name=aptitude update_cache=yes state=latest force_apt_get=yes
+      tags: [ system ]
+
+    - name: Instala pacotes LAMP 
+      apt: name={{ item }} update_cache=yes state=latest
+      loop: [ 'apache2', 'mariadb-server', 'python3-pymysql', 'php', 'php-mysql', 'libapache2-mod-php' ]
+      tags: [ system ]
+
+    - name: Instala Extensões PHP
+      apt: name={{ item }} update_cache=yes state=latest
+      loop: "{{ php_modules }}"
+      tags: [ system ]
+
+  # Apache Configuration
+    - name: Cria documento root
+      file:
+        path: "/var/www/{{ http_host }}"
+        state: directory
+        owner: "www-data"
+        group: "www-data"
+        mode: '0755'
+      tags: [ apache ]
+
+    - name: Set up Apache VirtualHost
+      template:
+        src: "files/apache.conf.j2"
+        dest: "/etc/apache2/sites-available/{{ http_conf }}"
+      notify: Reload Apache
+      tags: [ apache ]
+
+    - name: Permite rewrite module
+      shell: /usr/sbin/a2enmod rewrite
+      notify: Reload Apache
+      tags: [ apache ]
+
+    - name: Permite novo site
+      shell: /usr/sbin/a2ensite {{ http_conf }}
+      notify: Reload Apache
+      tags: [ apache ]
+
+    - name: Disabilita default Apache site
+      shell: /usr/sbin/a2dissite 000-default.conf
+      notify: Restart Apache
+      tags: [ apache ]
+
+  # MySQL Configuration
+    - name: Set root password
+      mysql_user:
+        name: root
+        password: "{{ mysql_root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      tags: [ mysql, mysql-root ]
+
+    - name: Cria database para WordPress
+      mysql_db:
+        name: "{{ mysql_db }}"
+        state: present
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      tags: [ mysql ]
+
+    - name: Creia usuario MySQL para WordPress
+      mysql_user:
+        name: "{{ mysql_user }}"
+        password: "{{ mysql_password }}"
+        priv: "{{ mysql_db }}.*:ALL"
+        state: present
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      tags: [ mysql ]
+
+
+  # WordPress Configuration
+    - name: Download e descompacta latest WordPress
+      unarchive:
+        src: https://wordpress.org/latest.tar.gz
+        dest: "/var/www/html/"
+        remote_src: yes
+        creates: "/var/www/html/wordpress/"
+      tags: [ wordpress ]
+
+    - name: Seta ownership
+      file:
+        path: "/var/www/html/"
+        state: directory
+        recurse: yes
+        owner: www-data
+        group: www-data
+      tags: [ wordpress ]
+
+    - name: Seta permissião para diretorios
+      shell: "/usr/bin/find /var/www/html/{{ http_host }}/ -type d -exec chmod 750 {} \\;"
+      tags: [ wordpress ]
+
+    - name: Seta permissião para arquivos
+      shell: "/usr/bin/find /var/www/html/{{ http_host }}/ -type f -exec chmod 640 {} \\;"
+      tags: [ wordpress ]
+
+    - name: Seta wp-config
+      template:
+        src: "files/wp-config.php.j2"
+        dest: "/var/www/html/{{ http_host }}/wp-config.php"
+      tags: [ wordpress ]
+
+  handlers:
+    - name: Reload Apache
+      service:
+        name: apache2
+        state: reloaded
+
+    - name: Restart Apache
+      service:
+        name: apache2
+        state: restarted
